@@ -20,7 +20,12 @@
     "tabletop",
     "procedural"
   ],
+  "author": "Adam Miller",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AdamGMiller/overland-map-generator.git"
+  },
   "devDependencies": {
     "puppeteer": "^24.42.0"
   }

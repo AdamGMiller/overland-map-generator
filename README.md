@@ -24,7 +24,7 @@ Open `index.html` in a browser to use the interactive generator.
 ## Installation
 
 ```bash
-npm install github:youruser/overland-map-generator
+npm install github:AdamGMiller/overland-map-generator
 ```
 
 ## Usage as a Library
