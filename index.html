@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Overland Hex Map Generator</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Georgia', serif;
+    background: #2a2520;
+    color: #e8e0d0;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  header {
+    padding: 12px 20px;
+    background: #1a1510;
+    border-bottom: 2px solid #4a3a2a;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+  }
+  header h1 {
+    font-size: 18px;
+    color: #d4c8a8;
+    white-space: nowrap;
+  }
+  .controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .control-group label {
+    font-size: 11px;
+    color: #a89878;
+    white-space: nowrap;
+  }
+  input[type="number"], input[type="text"] {
+    width: 60px;
+    padding: 3px 6px;
+    border: 1px solid #5a4a3a;
+    background: #3a3028;
+    color: #e8e0d0;
+    border-radius: 3px;
+    font-size: 12px;
+    font-family: monospace;
+  }
+  input[type="text"] { width: 100px; }
+  input[type="checkbox"] { accent-color: #8a6a3a; }
+  button {
+    padding: 5px 14px;
+    background: #6a5030;
+    border: 1px solid #8a6a3a;
+    color: #e8e0d0;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: Georgia, serif;
+    font-size: 12px;
+    transition: background 0.2s;
+  }
+  button:hover { background: #8a6a3a; }
+  #map-container {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    margin-top: 52px;
+    cursor: grab;
+  }
+  #map-container.dragging { cursor: grabbing; }
+  #map-container svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    border: 2px solid #4a3a2a;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    transform-origin: 0 0;
+  }
+  #map-container svg polygon.hex-hover {
+    cursor: pointer;
+  }
+   /* Zoom-level label visibility */
+  .label-region { transition: opacity 0.3s ease; }
+
+  .zoom-far .label-poi,
+  .zoom-far .label-village,
+  .zoom-far .label-coast,
+  .zoom-far .label-lake,
+  .zoom-far .label-swamp,
+  .zoom-far .label-river,
+  .zoom-far .label-island,
+  .zoom-far .label-town,
+  .zoom-far .label-mountain,
+  .zoom-far .label-forest,
+  .zoom-far .label-desert,
+  .zoom-far .label-tundra { display: none; }
+
+  /* Hide detail layers when fully zoomed out for performance */
+  .zoom-far #forests,
+  .zoom-far #swamps,
+  .zoom-far #terrain-texture,
+  .zoom-far #pois { display: none; }
+
+  /* Keep city icons visible when zoomed out, hide only village/town detail */
+  .zoom-far .settlement-village,
+  .zoom-far .settlement-town { display: none; }
+
+  .zoom-mid .label-village { display: none; }
+  .zoom-mid .label-region { opacity: 0.45; }
+
+  .zoom-close .label-region { opacity: 0; }
+  .zoom-close .label-water { opacity: 0.3; }
+
+  /* When zoomed in, make local feature labels darker and more readable */
+  .zoom-close .label-mountain text,
+  .zoom-close .label-forest text,
+  .zoom-close .label-lake text,
+  .zoom-close .label-swamp text,
+  .zoom-close .label-desert text,
+  .zoom-close .label-tundra text,
+  .zoom-close .label-river text {
+    stroke-opacity: 0.5;
+    fill-opacity: 1;
+    opacity: 1 !important;
+  }
+  .zoom-close .label-mountain text { fill: #3a2a1a; }
+  .zoom-close .label-forest text { fill: #0a2a0a; }
+  .zoom-close .label-lake text { fill: #0a2a4a; }
+  .zoom-close .label-swamp text { fill: #2a3a0a; }
+  .zoom-close .label-desert text { fill: #5a3a0a; }
+  .zoom-close .label-tundra text { fill: #3a4a5a; }
+  .zoom-close .label-river text { fill: #0a2a4a; opacity: 1 !important; }
+  #hex-tooltip {
+    position: absolute;
+    display: none;
+    background: #1a1510ee;
+    border: 1px solid #6a5a3a;
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: #e8e0d0;
+    font-size: 11px;
+    line-height: 1.6;
+    pointer-events: none;
+    z-index: 100;
+    max-width: 260px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+    font-family: 'Georgia', serif;
+  }
+  #hex-tooltip .tt-title {
+    font-weight: bold;
+    font-size: 12px;
+    color: #d4c8a8;
+    margin-bottom: 2px;
+  }
+  #hex-tooltip .tt-row { color: #baa; }
+  #hex-tooltip .tt-row span { color: #e8e0d0; }
+  #stats {
+    padding: 8px 20px;
+    background: #1a1510;
+    border-top: 1px solid #3a3028;
+    font-size: 11px;
+    color: #8a7a6a;
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+  }
+  .stat-item { white-space: nowrap; }
+  .stat-label { color: #a89878; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⬡ Overland Map Generator</h1>
+  <div class="controls">
+    <div class="control-group">
+      <label>Seed:</label>
+      <input type="text" id="seed" value="" placeholder="random">
+    </div>
+    <div class="control-group">
+      <label>Cols:</label>
+      <input type="number" id="cols" value="50" min="4" max="80">
+    </div>
+    <div class="control-group">
+      <label>Rows:</label>
+      <input type="number" id="rows" value="50" min="4" max="80">
+    </div>
+    <div class="control-group">
+      <label>Hex Size:</label>
+      <input type="number" id="hexSize" value="50" min="20" max="100">
+    </div>
+    <div class="control-group">
+      <label>Cities:</label>
+      <input type="number" id="numCities" value="5" min="0" max="10">
+    </div>
+    <div class="control-group">
+      <label>Towns:</label>
+      <input type="number" id="numTowns" value="10" min="0" max="20">
+    </div>
+    <div class="control-group">
+      <label>Villages:</label>
+      <input type="number" id="numVillages" value="8" min="0" max="20">
+    </div>
+    <div class="control-group">
+      <label>POIs:</label>
+      <input type="number" id="numPOIs" value="20" min="0" max="40">
+    </div>
+    <div class="control-group">
+      <label>Rivers:</label>
+      <input type="number" id="numRivers" value="8" min="0" max="15">
+    </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="showHexGrid" checked> Grid</label>
+    </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="showLabels" checked> Labels</label>
+    </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="showPassability"> Pass.</label>
+    </div>
+    <button onclick="generate()">Generate</button>
+    <button onclick="randomSeed()">Random</button>
+    <button onclick="downloadSVG()">Download SVG</button>
+  </div>
+</header>
+
+<div id="map-container">
+  <p style="color: #6a5a4a; margin-top: 100px;">Click "Generate" to create a map...</p>
+</div>
+<div id="hex-tooltip"></div>
+
+<div id="stats"></div>
+
+<script type="module">
+import { OverlandMap } from './src/index.js';
+import { hexToPixel, hexCorners, hexKey } from './src/hex.js';
+
+let currentMap = null;
+window._getMap = () => currentMap;
+let iconSVGs = null;
+
+// Load SVG icons from /icons/ directory — tries all known icon names
+async function loadIcons() {
+  const names = [
+    // Settlements - cities
+    'castle', 'city-1', 'city-coastal-1',
+    // Settlements - towns
+    'keep', 'keep-2', 'keep-4',
+    'town-1', 'town-2', 'town-3', 'town-4', 'town-5', 'town-coastal-1',
+    // Settlements - villages
+    'huts', 'village-1', 'village-2', 'village-3', 'village-4', 'village-coastal-1',
+    'cabin', 'cabin-2', 'cabin-3', 'cabin-4',
+    // POIs
+    'cave', 'cave-primitive',
+    'tower', 'watch-tower', 'wizard-tower',
+    'evil-castle-1', 'evil-castle-2',
+    'ruins', 'ruins-2', 'ruins-3', 'ruins-4', 'aqueduct-ruins',
+    'mine-1', 'mine-2', 'mine-3',
+    'shrine-1', 'shrine-2', 'tent-camp', 'camp', 'dragon-lair',
+    'standing-stones', 'shipwreck-1', 'shipwreck-2', 'obelisk',
+    'tomb-1', 'tomb-2', 'graveyard', 'cairn',
+    'pyramid', 'ziggaraut', 'ziggaraut-ruins',
+    'dead-forest', 'great-tree', 'floating-tree', 'fairy-ring',
+    'giant-skeleton', 'broken-colossus',
+    'meteor-crater', 'pit', 'pit-2', 'old-battlefield', 'log-fort',
+    'lighthouse', 'volcano', 'mountain',
+    // Structures
+    'docks', 'harbor-1', 'inn', 'tavern', 'temple-1',
+    'fountain', 'well', 'windmill',
+    // Dark/exotic POIs
+    'evil-altar', 'evil-altar-2', 'skull-totem', 'skull-fortification',
+    'tar-pit', 'chasm', 'broken-obelisk',
+    'ruined-church', 'ruined-tower', 'ruins-5', 'ruins-6', 'ruins-7',
+    'dead-tree-2', 'tomb-3',
+  ];
+  const loaded = {};
+  const fetches = names.map(async name => {
+    try {
+      const res = await fetch(`./icons/${name}.svg`);
+      if (res.ok) loaded[name] = await res.text();
+    } catch (e) { /* icon not available */ }
+  });
+  await Promise.all(fetches);
+  if (Object.keys(loaded).length > 0) {
+    iconSVGs = loaded;
+    console.log(`Loaded ${Object.keys(loaded).length} SVG icons: ${Object.keys(loaded).join(', ')}`);
+  }
+}
+
+// Load icons first, then generate the initial map
+loadIcons().then(() => generate());
+
+// Pan/zoom state
+let panZoomState = { zoom: 1, panX: 0, panY: 0, dragging: false, lastX: 0, lastY: 0 };
+
+function setupHoverInteraction(svgEl, mapInstance) {
+  const world = mapInstance.world;
+  const hexSize = world.hexSize;
+  const tooltip = document.getElementById('hex-tooltip');
+
+  const hoverGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  hoverGroup.id = 'hex-hover-layer';
+
+  for (const [key, hex] of world.hexMap) {
+    const corners = hexCorners(hex.q, hex.r, hexSize);
+    const pts = corners.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', pts);
+    poly.setAttribute('fill', 'transparent');
+    poly.setAttribute('stroke', 'none');
+    poly.setAttribute('class', 'hex-hover');
+    poly.dataset.hexKey = key;
+
+    poly.addEventListener('mouseenter', (e) => {
+      if (panZoomState.dragging) return;
+      poly.setAttribute('fill', 'rgba(255,255,200,0.12)');
+      showTooltip(e, hex, world);
+    });
+    poly.addEventListener('mousemove', (e) => {
+      if (panZoomState.dragging) { tooltip.style.display = 'none'; return; }
+      positionTooltip(e);
+    });
+    poly.addEventListener('mouseleave', () => {
+      poly.setAttribute('fill', 'transparent');
+      tooltip.style.display = 'none';
+    });
+
+    hoverGroup.appendChild(poly);
+  }
+  svgEl.appendChild(hoverGroup);
+}
+
+function showTooltip(event, hex, world) {
+  const tooltip = document.getElementById('hex-tooltip');
+  const terrainLabel = hex.terrain.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  let html = `<div class="tt-title">${terrainLabel}</div>`;
+  html += `<div class="tt-row">Coords: <span>(${hex.q}, ${hex.r})</span></div>`;
+  html += `<div class="tt-row">Elevation: <span>${(hex.elevation * 100).toFixed(0)}%</span> | Moisture: <span>${(hex.moisture * 100).toFixed(0)}%</span></div>`;
+
+  if (hex.settlement) {
+    let iconInfo = '';
+    if (iconSVGs) {
+      const sMap = {
+        city: { default: ['city-1', 'castle'], coastal: ['city-coastal-1'] },
+        town: { default: ['town-1', 'town-2', 'town-3', 'town-4', 'town-5', 'keep', 'keep-2', 'keep-4'], coastal: ['town-coastal-1'] },
+        village: { default: ['village-1', 'village-2', 'village-3', 'village-4', 'cabin', 'cabin-2', 'cabin-3', 'cabin-4', 'huts'], coastal: ['village-coastal-1'] },
+      };
+      const mapping = sMap[hex.settlement.type];
+      if (mapping) {
+        const isCoastal = hex.isCoast;
+        const lists = isCoastal ? [mapping.coastal, mapping.default] : [mapping.default];
+        for (const candidates of lists) {
+          const avail = candidates.filter(k => iconSVGs[k]);
+          if (avail.length > 0) {
+            iconInfo = ` — icon: ${avail[(hex.q * 7 + hex.r * 13) % avail.length]}.svg`;
+            break;
+          }
+        }
+      }
+    }
+    html += `<div class="tt-row">Settlement: <span>${hex.settlement.name} (${hex.settlement.type})${iconInfo}</span></div>`;
+  }
+  if (hex.poi) {
+    let iconInfo = '';
+    if (iconSVGs) {
+      const pMap = {
+        cave: ['cave', 'cave-primitive'], tower: ['tower', 'watch-tower'], wizard_tower: 'wizard-tower',
+        castle: ['evil-castle-1', 'evil-castle-2', 'castle'],
+        ruins: ['ruins', 'ruins-2', 'ruins-3', 'ruins-4', 'ruins-5', 'ruins-6', 'ruins-7', 'aqueduct-ruins', 'ruined-church', 'ruined-tower'],
+        mine: ['mine-1', 'mine-2', 'mine-3'],
+        shrine: ['shrine-1', 'shrine-2'], camp: ['tent-camp', 'camp'], dragon_lair: 'dragon-lair',
+        standing_stones: 'standing-stones', shipwreck: ['shipwreck-1', 'shipwreck-2'],
+        obelisk: ['obelisk', 'broken-obelisk'],
+        tomb: ['tomb-1', 'tomb-2', 'tomb-3', 'graveyard'], cairn: 'cairn',
+        pyramid: ['pyramid', 'ziggaraut', 'ziggaraut-ruins'],
+        dead_forest: ['dead-forest', 'dead-tree-2'], great_tree: ['great-tree', 'floating-tree'],
+        fairy_ring: 'fairy-ring', giant_skeleton: 'giant-skeleton',
+        meteor_crater: 'meteor-crater', pit: ['pit', 'pit-2'],
+        battlefield: 'old-battlefield', log_fort: ['log-fort', 'skull-fortification'], colossus: 'broken-colossus',
+        lighthouse: 'lighthouse', harbor: 'harbor-1', docks: 'docks',
+        inn: 'inn', tavern: 'tavern', temple: 'temple-1',
+        fountain: 'fountain', well: 'well', windmill: 'windmill',
+        evil_altar: ['evil-altar', 'evil-altar-2'], totem: 'skull-totem',
+        tar_pit: 'tar-pit', chasm: 'chasm',
+      };
+      let candidates = pMap[hex.poi.type];
+      if (candidates) {
+        if (!Array.isArray(candidates)) candidates = [candidates];
+        const avail = candidates.filter(k => iconSVGs[k]);
+        if (avail.length > 0) {
+          iconInfo = ` — icon: ${avail[(hex.q * 7 + hex.r * 13) % avail.length]}.svg`;
+        }
+      }
+    }
+    html += `<div class="tt-row">POI: <span>${hex.poi.name} (${hex.poi.type})${iconInfo}</span></div>`;
+  }
+
+  const dirNames = ['E', 'SE', 'SW', 'W', 'NW', 'NE'];
+  const edges = [];
+  for (let e = 0; e < 6; e++) {
+    const p = hex.edges[e];
+    if (p && p !== 'normal') {
+      edges.push(`${dirNames[e]}: ${p}`);
+    }
+  }
+  if (edges.length > 0) {
+    html += `<div class="tt-row">Edges: <span>${edges.join(', ')}</span></div>`;
+  }
+
+  if (hex.river) {
+    html += `<div class="tt-row">🏞️ <span>River</span></div>`;
+  }
+  if (hex.roads && hex.roads.length > 0) {
+    const roadTypes = [...new Set(hex.roads)];
+    html += `<div class="tt-row">🛤️ <span>Road (${roadTypes.join(', ')})</span></div>`;
+  }
+
+  // Feature/region names
+  if (hex.featureNames && hex.featureNames.length > 0) {
+    html += `<div class="tt-row">📍 Area: <span>${hex.featureNames.join(', ')}</span></div>`;
+  }
+
+  // Hunting & Fishing
+  const foragingParts = [];
+  if (hex.hunting && hex.hunting !== 'none') {
+    foragingParts.push(`🏹 Hunting: ${hex.hunting}`);
+  }
+  if (hex.fishing && hex.fishing !== 'none') {
+    foragingParts.push(`🎣 Fishing: ${hex.fishing}`);
+  }
+  if (foragingParts.length > 0) {
+    html += `<div class="tt-row"><span>${foragingParts.join(' &nbsp;|&nbsp; ')}</span></div>`;
+  }
+
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  positionTooltip(event);
+}
+
+function positionTooltip(event) {
+  const tooltip = document.getElementById('hex-tooltip');
+  const pad = 12;
+  const tw = tooltip.offsetWidth;
+  const th = tooltip.offsetHeight;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  let x = event.clientX + pad;
+  let y = event.clientY + pad;
+
+  // Flip sides if it would go off-screen
+  if (x + tw > vw - pad) x = event.clientX - tw - pad;
+  if (y + th > vh - pad) y = event.clientY - th - pad;
+  x = Math.max(pad, Math.min(x, vw - tw - pad));
+  y = Math.max(pad, Math.min(y, vh - th - pad));
+
+  tooltip.style.left = x + 'px';
+  tooltip.style.top = y + 'px';
+}
+
+function setupPanZoom(svgEl) {
+  const container = document.getElementById('map-container');
+  const st = panZoomState;
+  st.zoom = 1;
+  st.panX = 20;
+  st.panY = 20;
+  st.dragging = false;
+
+  function applyTransform() {
+    svgEl.style.transform = `translate(${st.panX}px, ${st.panY}px) scale(${st.zoom})`;
+    // Update zoom-level CSS classes for label visibility
+    svgEl.classList.remove('zoom-far', 'zoom-mid', 'zoom-close');
+    if (st.zoom < 0.6) svgEl.classList.add('zoom-far');
+    else if (st.zoom < 1.5) svgEl.classList.add('zoom-mid');
+    else svgEl.classList.add('zoom-close');
+  }
+  applyTransform();
+
+  container.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const oldZoom = st.zoom;
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    st.zoom = Math.max(0.2, Math.min(8, st.zoom * factor));
+
+    // Keep point under cursor fixed
+    st.panX = mouseX - (mouseX - st.panX) * (st.zoom / oldZoom);
+    st.panY = mouseY - (mouseY - st.panY) * (st.zoom / oldZoom);
+
+    applyTransform();
+  }, { passive: false });
+
+  container.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    st.dragging = true;
+    st.lastX = e.clientX;
+    st.lastY = e.clientY;
+    container.classList.add('dragging');
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!st.dragging) return;
+    st.panX += e.clientX - st.lastX;
+    st.panY += e.clientY - st.lastY;
+    st.lastX = e.clientX;
+    st.lastY = e.clientY;
+    applyTransform();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (st.dragging) {
+      st.dragging = false;
+      container.classList.remove('dragging');
+    }
+  });
+}
+
+window.generate = function() {
+  const seedInput = document.getElementById('seed').value.trim();
+  const seed = seedInput ? parseInt(seedInput, 10) || hashString(seedInput) : undefined;
+
+  const options = {
+    seed,
+    cols: parseInt(document.getElementById('cols').value) || 20,
+    rows: parseInt(document.getElementById('rows').value) || 16,
+    hexSize: parseInt(document.getElementById('hexSize').value) || 50,
+    numCities: parseInt(document.getElementById('numCities').value) || 0,
+    numTowns: parseInt(document.getElementById('numTowns').value) || 0,
+    numVillages: parseInt(document.getElementById('numVillages').value) || 0,
+    numPOIs: parseInt(document.getElementById('numPOIs').value) || 0,
+    numRivers: parseInt(document.getElementById('numRivers').value) || 0,
+    showHexGrid: document.getElementById('showHexGrid').checked,
+    showLabels: document.getElementById('showLabels').checked,
+    showPassability: document.getElementById('showPassability').checked,
+    iconSVGs: iconSVGs,
+  };
+
+  currentMap = new OverlandMap(options);
+  document.getElementById('seed').value = currentMap.seed;
+
+  const container = document.getElementById('map-container');
+  container.innerHTML = '';
+  const svgEl = currentMap.render();
+  container.appendChild(svgEl);
+
+  setupHoverInteraction(svgEl, currentMap);
+  setupPanZoom(svgEl);
+
+  const stats = currentMap.getStats();
+  document.getElementById('stats').innerHTML = `
+    <span class="stat-item"><span class="stat-label">Seed:</span> ${stats.seed}</span>
+    <span class="stat-item"><span class="stat-label">Hexes:</span> ${stats.totalHexes}</span>
+    <span class="stat-item"><span class="stat-label">Settlements:</span> ${stats.settlements.map(s => s.name).join(', ') || 'none'}</span>
+    <span class="stat-item"><span class="stat-label">POIs:</span> ${stats.pois.length}</span>
+    <span class="stat-item"><span class="stat-label">Rivers:</span> ${stats.rivers}</span>
+    <span class="stat-item"><span class="stat-label">Roads:</span> ${stats.roads}</span>
+  `;
+};
+
+window.randomSeed = function() {
+  document.getElementById('seed').value = '';
+  generate();
+};
+
+window.downloadSVG = function() {
+  if (!currentMap) return;
+  const svgStr = currentMap.toSVG();
+  const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `hexmap-${currentMap.seed}.svg`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+// Initial generate is called after loadIcons() completes (see above)
+</script>
+</body>
+</html>

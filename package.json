@@ -1,0 +1,27 @@
+{
+  "name": "overland-map-generator",
+  "version": "1.0.0",
+  "description": "Procedural hand-drawn overland hexcrawl map generator using SVG",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "icons/"
+  ],
+  "keywords": [
+    "hexcrawl",
+    "map",
+    "generator",
+    "svg",
+    "rpg",
+    "tabletop",
+    "procedural"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "puppeteer": "^24.42.0"
+  }
+}
