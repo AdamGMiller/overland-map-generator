@@ -24,6 +24,7 @@ export class OverlandMap {
    * @param {boolean} [options.showHexGrid=true] - Show hex grid overlay
    * @param {boolean} [options.showLabels=true] - Show settlement/POI labels
    * @param {boolean} [options.showPassability=false] - Show passability overlay
+   * @param {boolean} [options.blackAndWhite=false] - Render map in black and white
    * @param {number} [options.waterRatio=0.25] - Fraction of map that is water
    * @param {number} [options.mountainRatio=0.12] - Fraction of map that is mountains
    * @param {number} [options.forestDensity=0.35] - Forest density factor
@@ -43,6 +44,7 @@ export class OverlandMap {
       showHexGrid: options.showHexGrid ?? true,
       showLabels: options.showLabels ?? true,
       showPassability: options.showPassability ?? false,
+      blackAndWhite: options.blackAndWhite ?? false,
       iconSVGs: options.iconSVGs ?? null,
       waterRatio: options.waterRatio ?? 0.25,
       mountainRatio: options.mountainRatio ?? 0.12,

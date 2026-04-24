@@ -211,6 +211,7 @@ export class MapRenderer {
     this.showHexGrid = options.showHexGrid !== false;
     this.showLabels = options.showLabels !== false;
     this.showPassability = options.showPassability || false;
+    this.blackAndWhite = options.blackAndWhite || false;
     this.iconSVGs = options.iconSVGs || null;
 
     // Calculate bounds
@@ -308,9 +309,71 @@ export class MapRenderer {
 
     const defs = this._renderDefs();
     const vb = `${this.bounds.minX.toFixed(0)} ${this.bounds.minY.toFixed(0)} ${this.width.toFixed(0)} ${this.height.toFixed(0)}`;
+    const bwClass = this.blackAndWhite ? ' class="bw-mode"' : '';
+    const bgColor = this.blackAndWhite ? '#ffffff' : '#f5f0e6';
+    const bwStyle = this.blackAndWhite ? `
+<style>
+  /* Background & terrain */
+  .bw-mode #background rect { fill: #ffffff !important; }
+  .bw-mode #terrain-shading polygon { fill: none !important; }
+
+  /* Water: light gray fill with visible wave lines */
+  .bw-mode #water path[fill] { fill: #e0e0e0 !important; }
+  .bw-mode #water path[stroke] { stroke: #999 !important; opacity: 0.6 !important; }
+  .bw-mode #water circle { fill: #ccc !important; }
+
+  /* Beach: very light gray */
+  .bw-mode #water path[fill="#efe8d4"] { fill: #f0f0f0 !important; }
+  .bw-mode #water circle[fill="#c8b898"] { fill: #bbb !important; }
+
+  /* Coastlines: crisp black */
+  .bw-mode #coastlines path { stroke: #000 !important; }
+
+  /* Rivers: dark lines */
+  .bw-mode #rivers path { stroke: #333 !important; }
+  .bw-mode #rivers circle { fill: #ddd !important; stroke: #333 !important; }
+
+  /* Roads: all black/dark gray */
+  .bw-mode #roads path { stroke: #222 !important; }
+  .bw-mode #roads path[stroke="#f5f0e6"] { stroke: #fff !important; }
+  .bw-mode #roads circle { fill: #222 !important; stroke: #222 !important; }
+  .bw-mode #roads circle[fill="#f5f0e6"] { fill: #fff !important; }
+
+  /* Trees, hills, mountains: black ink */
+  .bw-mode #forests line { stroke: #222 !important; }
+  .bw-mode #forests path { fill: #fff !important; stroke: #222 !important; }
+  .bw-mode #hills path { stroke: #222 !important; }
+  .bw-mode #hills path[fill="#f5f0e6"] { fill: #fff !important; }
+  .bw-mode #hills line { stroke: #222 !important; }
+  .bw-mode #mountains path { stroke: #222 !important; }
+  .bw-mode #mountains path[fill="#f5f0e6"] { fill: #fff !important; }
+  .bw-mode #mountains path[fill="#5a4a3a"] { fill: #222 !important; }
+  .bw-mode #mountains line { stroke: #222 !important; }
+
+  /* Swamps */
+  .bw-mode #swamps line { stroke: #222 !important; }
+
+  /* Terrain texture */
+  .bw-mode #terrain-texture line { stroke: #555 !important; }
+  .bw-mode #terrain-texture circle { fill: #888 !important; }
+
+  /* Hex grid */
+  .bw-mode #hex-grid polygon { stroke: #999 !important; }
+
+  /* Labels: black text, white outline */
+  .bw-mode text { fill: #111 !important; stroke: #fff !important; }
+  .bw-mode .label-water text { fill: #444 !important; }
+  .bw-mode .label-river text { fill: #444 !important; }
+  .bw-mode .label-region text { fill: #333 !important; }
+
+  /* Passability */
+  .bw-mode #passability text[fill="#c03030"] { fill: #000 !important; }
+  .bw-mode #passability text[fill="#c0a030"] { fill: #666 !important; }
+</style>` : '';
 
     return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="${SVG_NS}" viewBox="${vb}" width="${this.width.toFixed(0)}" height="${this.height.toFixed(0)}" style="background:#f5f0e6">
+<svg xmlns="${SVG_NS}" viewBox="${vb}" width="${this.width.toFixed(0)}" height="${this.height.toFixed(0)}" style="background:${bgColor}"${bwClass}>
+${bwStyle}
 ${defs}
 ${layers.join('\n')}
 </svg>`;

@@ -235,6 +235,9 @@
     <div class="control-group">
       <label><input type="checkbox" id="showPassability"> Pass.</label>
     </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="blackAndWhite"> B&amp;W</label>
+    </div>
     <button onclick="generate()">Generate</button>
     <button onclick="randomSeed()">Random</button>
     <button onclick="downloadSVG()">Download SVG</button>
@@ -552,6 +555,7 @@ window.generate = function() {
     showHexGrid: document.getElementById('showHexGrid').checked,
     showLabels: document.getElementById('showLabels').checked,
     showPassability: document.getElementById('showPassability').checked,
+    blackAndWhite: document.getElementById('blackAndWhite').checked,
     iconSVGs: iconSVGs,
   };
 
