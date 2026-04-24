@@ -92,9 +92,48 @@
   #map-container svg polygon.hex-hover {
     cursor: pointer;
   }
-   /* Zoom-level label visibility */
+   /* ── Level-of-Detail zoom classes ──
+      zoom-overview  (< 0.3)  — terrain shading, coastlines, cities, region labels only
+      zoom-far       (0.3–0.6) — adds mountains, hills, rivers, roads, town icons
+      zoom-mid       (0.6–1.5) — adds forests, swamps, POIs, terrain texture
+      zoom-close     (> 1.5)   — full detail
+   */
   .label-region { transition: opacity 0.3s ease; }
 
+  /* ── zoom-overview: maximum simplification ── */
+  .zoom-overview #forests,
+  .zoom-overview #swamps,
+  .zoom-overview #terrain-texture,
+  .zoom-overview #mountains,
+  .zoom-overview #hills,
+  .zoom-overview #hex-grid,
+  .zoom-overview #passability,
+  .zoom-overview #pois,
+  .zoom-overview #roads { display: none; }
+
+  .zoom-overview .settlement-village,
+  .zoom-overview .settlement-town { display: none; }
+
+  .zoom-overview .label-poi,
+  .zoom-overview .label-village,
+  .zoom-overview .label-coast,
+  .zoom-overview .label-lake,
+  .zoom-overview .label-swamp,
+  .zoom-overview .label-river,
+  .zoom-overview .label-island,
+  .zoom-overview .label-town,
+  .zoom-overview .label-mountain,
+  .zoom-overview .label-forest,
+  .zoom-overview .label-desert,
+  .zoom-overview .label-tundra { display: none; }
+
+  .zoom-overview .label-region { opacity: 0.8; }
+  .zoom-overview .label-city { font-size: 120%; }
+
+  /* Simplify rivers at overview — thinner, less detail */
+  .zoom-overview #rivers path { stroke-width: 1 !important; }
+
+  /* ── zoom-far: add terrain features, hide small detail ── */
   .zoom-far .label-poi,
   .zoom-far .label-village,
   .zoom-far .label-coast,
@@ -108,23 +147,24 @@
   .zoom-far .label-desert,
   .zoom-far .label-tundra { display: none; }
 
-  /* Hide detail layers when fully zoomed out for performance */
   .zoom-far #forests,
   .zoom-far #swamps,
   .zoom-far #terrain-texture,
   .zoom-far #pois { display: none; }
 
-  /* Keep city icons visible when zoomed out, hide only village/town detail */
   .zoom-far .settlement-village,
   .zoom-far .settlement-town { display: none; }
 
+  .zoom-far .label-region { opacity: 0.55; }
+
+  /* ── zoom-mid: most detail, hide village labels ── */
   .zoom-mid .label-village { display: none; }
   .zoom-mid .label-region { opacity: 0.45; }
 
+  /* ── zoom-close: full detail, emphasis on local features ── */
   .zoom-close .label-region { opacity: 0; }
   .zoom-close .label-water { opacity: 0.3; }
 
-  /* When zoomed in, make local feature labels darker and more readable */
   .zoom-close .label-mountain text,
   .zoom-close .label-forest text,
   .zoom-close .label-lake text,
@@ -514,11 +554,18 @@ function setupPanZoom(svgEl) {
 
   function cullChunks() {
     if (!currentChunkBounds || !chunkEls) return;
+
+    // At overview zoom, CSS already hides most heavy layers — show all chunks
+    // to avoid unnecessary per-chunk computation on the few visible layers
+    if (st.zoom < 0.3) {
+      for (const el of chunkEls) el.style.display = '';
+      return;
+    }
+
     const rect = container.getBoundingClientRect();
     const vw = rect.width;
     const vh = rect.height;
 
-    // Convert screen viewport corners to SVG coordinates
     const svgMinX = -st.panX / st.zoom;
     const svgMinY = -st.panY / st.zoom;
     const svgMaxX = svgMinX + vw / st.zoom;
@@ -528,7 +575,6 @@ function setupPanZoom(svgEl) {
       const ck = el.dataset.ck;
       const b = currentChunkBounds[ck];
       if (!b) { el.style.display = ''; continue; }
-      // Check if chunk bounds intersect viewport (with margin for elements that extend beyond hex center)
       const visible = b.maxX >= svgMinX && b.minX <= svgMaxX &&
                       b.maxY >= svgMinY && b.minY <= svgMaxY;
       el.style.display = visible ? '' : 'none';
@@ -538,8 +584,9 @@ function setupPanZoom(svgEl) {
   function applyTransform() {
     svgEl.style.transform = `translate(${st.panX}px, ${st.panY}px) scale(${st.zoom})`;
     // Update zoom-level CSS classes for label visibility
-    svgEl.classList.remove('zoom-far', 'zoom-mid', 'zoom-close');
-    if (st.zoom < 0.6) svgEl.classList.add('zoom-far');
+    svgEl.classList.remove('zoom-overview', 'zoom-far', 'zoom-mid', 'zoom-close');
+    if (st.zoom < 0.3) svgEl.classList.add('zoom-overview');
+    else if (st.zoom < 0.6) svgEl.classList.add('zoom-far');
     else if (st.zoom < 1.5) svgEl.classList.add('zoom-mid');
     else svgEl.classList.add('zoom-close');
 
