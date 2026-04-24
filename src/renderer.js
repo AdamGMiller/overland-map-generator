@@ -204,6 +204,8 @@ function handDrawnCurve(points, rng, wobbleAmount = 2) {
  * Main renderer class
  */
 export class MapRenderer {
+  static CHUNK_SIZE = 8; // hexes per chunk side
+
   constructor(worldData, options = {}) {
     this.world = worldData;
     this.hexSize = worldData.hexSize;
@@ -245,6 +247,72 @@ export class MapRenderer {
     for (const p of worldData.pois) {
       this._occupiedHexes.add(hexKey(p.q, p.r));
     }
+
+    // Precompute chunk pixel bounds for viewport culling
+    this._chunkBounds = this._computeChunkBounds();
+  }
+
+  /** Get chunk key for a hex coordinate */
+  _chunkKey(q, r) {
+    const cs = MapRenderer.CHUNK_SIZE;
+    return `${Math.floor(q / cs)},${Math.floor(r / cs)}`;
+  }
+
+  /** Compute pixel bounds for each chunk (used by viewport culling on main thread) */
+  _computeChunkBounds() {
+    const chunks = new Map();
+    const cs = MapRenderer.CHUNK_SIZE;
+    for (const [, hex] of this.world.hexMap) {
+      const ck = this._chunkKey(hex.q, hex.r);
+      const center = hexToPixel(hex.q, hex.r, this.hexSize);
+      if (!chunks.has(ck)) {
+        chunks.set(ck, { minX: center.x, minY: center.y, maxX: center.x, maxY: center.y });
+      } else {
+        const b = chunks.get(ck);
+        b.minX = Math.min(b.minX, center.x);
+        b.minY = Math.min(b.minY, center.y);
+        b.maxX = Math.max(b.maxX, center.x);
+        b.maxY = Math.max(b.maxY, center.y);
+      }
+    }
+    // Expand by hex size to cover full hex area
+    const pad = this.hexSize * 1.5;
+    for (const [, b] of chunks) {
+      b.minX -= pad; b.minY -= pad;
+      b.maxX += pad; b.maxY += pad;
+    }
+    return chunks;
+  }
+
+  /** Get chunk bounds as serializable object (for main thread viewport culling) */
+  getChunkBounds() {
+    const result = {};
+    for (const [k, b] of this._chunkBounds) {
+      result[k] = b;
+    }
+    return result;
+  }
+
+  /**
+   * Group hex-based SVG fragments by chunk.
+   * @param {Array<{q: number, r: number, svg: string}>} items
+   * @param {string} layerId - SVG group id
+   * @param {string} [cssClass] - optional CSS class for the layer
+   * @returns {string} SVG string with chunked groups
+   */
+  _chunkedLayer(items, layerId, cssClass) {
+    const chunks = new Map();
+    for (const item of items) {
+      const ck = this._chunkKey(item.q, item.r);
+      if (!chunks.has(ck)) chunks.set(ck, []);
+      chunks.get(ck).push(item.svg);
+    }
+    const cls = cssClass ? ` class="${cssClass}"` : '';
+    const groups = [];
+    for (const [ck, svgs] of chunks) {
+      groups.push(`<g class="chunk" data-ck="${ck}">${svgs.join('\n')}</g>`);
+    }
+    return `<g id="${layerId}"${cls}>${groups.join('\n')}</g>`;
   }
 
   /**
@@ -318,13 +386,13 @@ export class MapRenderer {
   .bw-mode #terrain-shading polygon { fill: none !important; }
 
   /* Water: light gray fill with visible wave lines */
-  .bw-mode #water path[fill] { fill: #e0e0e0 !important; }
-  .bw-mode #water path[stroke] { stroke: #999 !important; opacity: 0.6 !important; }
+  .bw-mode #water path:not([fill="none"]) { fill: #e0e0e0 !important; }
+  .bw-mode #water path[fill="none"] { stroke: #888 !important; opacity: 0.5 !important; }
   .bw-mode #water circle { fill: #ccc !important; }
 
   /* Beach: very light gray */
-  .bw-mode #water path[fill="#efe8d4"] { fill: #f0f0f0 !important; }
-  .bw-mode #water circle[fill="#c8b898"] { fill: #bbb !important; }
+  .bw-mode #water path[fill="#efe8d4"] { fill: #f4f4f4 !important; }
+  .bw-mode #water circle[fill="#c8b898"] { fill: #aaa !important; }
 
   /* Coastlines: crisp black */
   .bw-mode #coastlines path { stroke: #000 !important; }
@@ -365,6 +433,9 @@ export class MapRenderer {
   .bw-mode .label-water text { fill: #444 !important; }
   .bw-mode .label-river text { fill: #444 !important; }
   .bw-mode .label-region text { fill: #333 !important; }
+
+  /* Icons: ensure pure B&W — white fills stay white, colored fills go black */
+  .bw-mode #settlements path, .bw-mode #pois path { filter: grayscale(1); }
 
   /* Passability */
   .bw-mode #passability text[fill="#c03030"] { fill: #000 !important; }
@@ -416,7 +487,7 @@ ${layers.join('\n')}
 
   _renderWater() {
     const rng = new SeededRandom(this.world.seed + 100);
-    const parts = [];
+    const items = [];
 
     for (const [, hex] of this.world.hexMap) {
       if (hex.terrain !== TERRAIN.WATER && hex.terrain !== TERRAIN.DEEP_WATER && hex.terrain !== TERRAIN.LAKE) continue;
@@ -424,7 +495,7 @@ ${layers.join('\n')}
       const path = handDrawnPath(corners, rng, 0.5, true);
       const fill = hex.terrain === TERRAIN.DEEP_WATER ? '#d4dfe8' :
                    hex.terrain === TERRAIN.LAKE ? '#d0e0ea' : '#dce8ed';
-      parts.push(`<path d="${path}" fill="${fill}" stroke="none"/>`);
+      let svg = `<path d="${path}" fill="${fill}" stroke="none"/>`;
 
       // Water lines
       const center = hexToPixel(hex.q, hex.r, this.hexSize);
@@ -435,8 +506,9 @@ ${layers.join('\n')}
         const x1 = center.x - s * 0.6 + rng.gaussian() * 2;
         const x2 = center.x + s * 0.6 + rng.gaussian() * 2;
         const my = y + rng.gaussian() * 1.5;
-        parts.push(`<path d="M${x1.toFixed(1)},${y.toFixed(1)} Q${center.x.toFixed(1)},${my.toFixed(1)} ${x2.toFixed(1)},${y.toFixed(1)}" fill="none" stroke="#9ab" stroke-width="0.5" opacity="0.4"/>`);
+        svg += `<path d="M${x1.toFixed(1)},${y.toFixed(1)} Q${center.x.toFixed(1)},${my.toFixed(1)} ${x2.toFixed(1)},${y.toFixed(1)}" fill="none" stroke="#9ab" stroke-width="0.5" opacity="0.4"/>`;
       }
+      items.push({ q: hex.q, r: hex.r, svg });
     }
 
     // Beach fills
@@ -444,7 +516,7 @@ ${layers.join('\n')}
       if (hex.terrain !== TERRAIN.BEACH) continue;
       const corners = hexCorners(hex.q, hex.r, this.hexSize);
       const path = handDrawnPath(corners, rng, 0.5, true);
-      parts.push(`<path d="${path}" fill="#efe8d4" stroke="none"/>`);
+      let svg = `<path d="${path}" fill="#efe8d4" stroke="none"/>`;
       // Sand dots
       const center = hexToPixel(hex.q, hex.r, this.hexSize);
       const s = this.hexSize * 0.35;
@@ -453,16 +525,17 @@ ${layers.join('\n')}
         const dx = center.x + rng.gaussian() * s;
         const dy = center.y + rng.gaussian() * s;
         const dr = rng.range(0.3, 0.8);
-        parts.push(`<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="${dr.toFixed(1)}" fill="#c8b898" opacity="0.4"/>`);
+        svg += `<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="${dr.toFixed(1)}" fill="#c8b898" opacity="0.4"/>`;
       }
+      items.push({ q: hex.q, r: hex.r, svg });
     }
 
-    return `<g id="water">${parts.join('\n')}</g>`;
+    return this._chunkedLayer(items, 'water');
   }
 
   _renderTerrainShading() {
     const rng = new SeededRandom(this.world.seed + 150);
-    const parts = [];
+    const items = [];
     const terrainColors = {
       [TERRAIN.FOREST]: 'rgba(90, 120, 70, 0.12)',
       [TERRAIN.DENSE_FOREST]: 'rgba(70, 100, 55, 0.15)',
@@ -480,10 +553,10 @@ ${layers.join('\n')}
       if (!fill) continue;
       const corners = hexCorners(hex.q, hex.r, this.hexSize);
       const pts = corners.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
-      parts.push(`<polygon points="${pts}" fill="${fill}" stroke="none"/>`);
+      items.push({ q: hex.q, r: hex.r, svg: `<polygon points="${pts}" fill="${fill}" stroke="none"/>` });
     }
 
-    return `<g id="terrain-shading">${parts.join('\n')}</g>`;
+    return this._chunkedLayer(items, 'terrain-shading');
   }
 
   _renderCoastlines() {
@@ -558,67 +631,61 @@ ${layers.join('\n')}
 
   _renderTerrainTexture() {
     const rng = new SeededRandom(this.world.seed + 300);
-    const parts = [];
+    const items = [];
 
     for (const [, hex] of this.world.hexMap) {
       const center = hexToPixel(hex.q, hex.r, this.hexSize);
       const s = this.hexSize;
+      let svg = '';
 
       if (hex.terrain === TERRAIN.PLAINS || hex.terrain === TERRAIN.GRASSLAND) {
-        // Scattered grass tufts
         const count = hex.terrain === TERRAIN.GRASSLAND ? rng.int(3, 6) : rng.int(1, 3);
         for (let i = 0; i < count; i++) {
           const x = center.x + rng.gaussian() * s * 0.35;
           const y = center.y + rng.gaussian() * s * 0.35;
-          parts.push(this._drawGrassTuft(x, y, rng));
+          svg += this._drawGrassTuft(x, y, rng);
         }
       }
 
-      // Desert - sand dots and dune curves
       if (hex.terrain === TERRAIN.DESERT) {
-        const center = hexToPixel(hex.q, hex.r, this.hexSize);
-        const s = this.hexSize * 0.35;
-        // Stipple dots
+        const ds = this.hexSize * 0.35;
         for (let j = 0; j < 8; j++) {
-          const dx = center.x + rng.gaussian() * s;
-          const dy = center.y + rng.gaussian() * s;
-          parts.push(`<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="${rng.range(0.3, 0.8).toFixed(1)}" fill="#c0a060" opacity="0.4"/>`);
+          const dx = center.x + rng.gaussian() * ds;
+          const dy = center.y + rng.gaussian() * ds;
+          svg += `<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="${rng.range(0.3, 0.8).toFixed(1)}" fill="#c0a060" opacity="0.4"/>`;
         }
-        // Dune curve
-        const dy = center.y + rng.range(-s * 0.3, s * 0.3);
-        const x1 = center.x - s * 0.7;
-        const x2 = center.x + s * 0.7;
+        const dy = center.y + rng.range(-ds * 0.3, ds * 0.3);
+        const x1 = center.x - ds * 0.7;
+        const x2 = center.x + ds * 0.7;
         const cy = dy - rng.range(2, 5);
-        parts.push(`<path d="M${x1.toFixed(1)},${dy.toFixed(1)} Q${center.x.toFixed(1)},${cy.toFixed(1)} ${x2.toFixed(1)},${dy.toFixed(1)}" fill="none" stroke="#c0a060" stroke-width="0.6" opacity="0.5"/>`);
+        svg += `<path d="M${x1.toFixed(1)},${dy.toFixed(1)} Q${center.x.toFixed(1)},${cy.toFixed(1)} ${x2.toFixed(1)},${dy.toFixed(1)}" fill="none" stroke="#c0a060" stroke-width="0.6" opacity="0.5"/>`;
       }
 
-      // Tundra - snowflake dots and frost patterns
       if (hex.terrain === TERRAIN.TUNDRA) {
-        const center = hexToPixel(hex.q, hex.r, this.hexSize);
-        const s = this.hexSize * 0.3;
+        const ts = this.hexSize * 0.3;
         for (let j = 0; j < 5; j++) {
-          const sx = center.x + rng.gaussian() * s;
-          const sy = center.y + rng.gaussian() * s;
+          const sx = center.x + rng.gaussian() * ts;
+          const sy = center.y + rng.gaussian() * ts;
           const r = rng.range(0.5, 1.5);
-          // Simple snowflake: small cross
-          parts.push(`<line x1="${(sx-r).toFixed(1)}" y1="${sy.toFixed(1)}" x2="${(sx+r).toFixed(1)}" y2="${sy.toFixed(1)}" stroke="#8aa0b0" stroke-width="0.4" opacity="0.5"/>`);
-          parts.push(`<line x1="${sx.toFixed(1)}" y1="${(sy-r).toFixed(1)}" x2="${sx.toFixed(1)}" y2="${(sy+r).toFixed(1)}" stroke="#8aa0b0" stroke-width="0.4" opacity="0.5"/>`);
+          svg += `<line x1="${(sx-r).toFixed(1)}" y1="${sy.toFixed(1)}" x2="${(sx+r).toFixed(1)}" y2="${sy.toFixed(1)}" stroke="#8aa0b0" stroke-width="0.4" opacity="0.5"/>`;
+          svg += `<line x1="${sx.toFixed(1)}" y1="${(sy-r).toFixed(1)}" x2="${sx.toFixed(1)}" y2="${(sy+r).toFixed(1)}" stroke="#8aa0b0" stroke-width="0.4" opacity="0.5"/>`;
         }
       }
 
-      // Small dots for texture
       if (hex.terrain !== TERRAIN.WATER && hex.terrain !== TERRAIN.DEEP_WATER) {
         const dotCount = rng.int(0, 4);
         for (let i = 0; i < dotCount; i++) {
           const x = center.x + rng.gaussian() * s * 0.35;
           const y = center.y + rng.gaussian() * s * 0.35;
           const r = rng.range(0.3, 0.8);
-          parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="#5a4a3a" opacity="0.2"/>`);
+          svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="#5a4a3a" opacity="0.2"/>`;
         }
       }
+
+      if (svg) items.push({ q: hex.q, r: hex.r, svg });
     }
 
-    return `<g id="terrain-texture">${parts.join('\n')}</g>`;
+    return this._chunkedLayer(items, 'terrain-texture');
   }
 
   _drawGrassTuft(x, y, rng) {
@@ -638,7 +705,7 @@ ${layers.join('\n')}
 
   _renderSwamps() {
     const rng = new SeededRandom(this.world.seed + 350);
-    const parts = [];
+    const items = [];
 
     for (const [, hex] of this.world.hexMap) {
       if (hex.terrain !== TERRAIN.SWAMP) continue;
@@ -646,16 +713,17 @@ ${layers.join('\n')}
       const center = hexToPixel(hex.q, hex.r, this.hexSize);
       const s = this.hexSize * 0.4;
 
-      // Draw swamp symbols: horizontal line with 3 vertical reeds
+      let svg = '';
       const symbolCount = rng.int(3, 5);
       for (let i = 0; i < symbolCount; i++) {
         const sx = center.x + rng.gaussian() * s * 0.7;
         const sy = center.y + rng.gaussian() * s * 0.7;
-        parts.push(this._drawSwampSymbol(sx, sy, rng));
+        svg += this._drawSwampSymbol(sx, sy, rng);
       }
+      items.push({ q: hex.q, r: hex.r, svg });
     }
 
-    return `<g id="swamps">${parts.join('\n')}</g>`;
+    return this._chunkedLayer(items, 'swamps');
   }
 
   _drawSwampSymbol(x, y, rng) {
@@ -694,7 +762,7 @@ ${layers.join('\n')}
         const svg = (treeType === 'deciduous' || rng.chance(0.3))
           ? this._drawDeciduousTree(tx, ty, rng)
           : this._drawConiferTree(tx, ty, rng);
-        items.push({ y: ty, svg });
+        items.push({ y: ty, svg, q: hex.q, r: hex.r });
       }
 
       // Draw trees on edges toward adjacent forest hexes
@@ -715,14 +783,14 @@ ${layers.join('\n')}
           const svg = (treeType === 'deciduous' || rng.chance(0.3))
             ? this._drawDeciduousTree(tx, ty, rng)
             : this._drawConiferTree(tx, ty, rng);
-          items.push({ y: ty, svg });
+          items.push({ y: ty, svg, q: hex.q, r: hex.r });
         }
       }
     }
 
-    // Sort by Y so trees in front overlap those behind
+    // Sort by Y so trees in front overlap those behind, then chunk
     items.sort((a, b) => a.y - b.y);
-    return `<g id="forests">${items.map(i => i.svg).join('\n')}</g>`;
+    return this._chunkedLayer(items, 'forests');
   }
 
   _drawDeciduousTree(x, y, rng) {
@@ -788,7 +856,7 @@ ${layers.join('\n')}
       for (let i = 0; i < hillCount; i++) {
         const hx = center.x + rng.gaussian() * s * 0.3;
         const hy = center.y + rng.gaussian() * s * 0.3;
-        items.push({ y: hy, svg: this._drawHill(hx, hy, rng) });
+        items.push({ y: hy, svg: this._drawHill(hx, hy, rng), q: hex.q, r: hex.r });
       }
 
       // Draw hills between adjacent hill hexes for blending
@@ -804,13 +872,12 @@ ${layers.join('\n')}
         const midY = (center.y + nCenter.y) / 2;
         const hx = midX + rng.gaussian() * s * 0.12;
         const hy = midY + rng.gaussian() * s * 0.12;
-        items.push({ y: hy, svg: this._drawHill(hx, hy, rng) });
+        items.push({ y: hy, svg: this._drawHill(hx, hy, rng), q: hex.q, r: hex.r });
       }
     }
 
-    // Sort by Y so hills in front overlap those behind
     items.sort((a, b) => a.y - b.y);
-    return `<g id="hills">${items.map(i => i.svg).join('\n')}</g>`;
+    return this._chunkedLayer(items, 'hills');
   }
 
   _drawHill(x, y, rng) {
@@ -853,7 +920,7 @@ ${layers.join('\n')}
       for (let i = 0; i < mtnCount; i++) {
         const mx = center.x + rng.gaussian() * s * 0.3;
         const my = center.y + rng.gaussian() * s * 0.25;
-        items.push({ y: my, svg: this._drawMountain(mx, my, rng, isHigh) });
+        items.push({ y: my, svg: this._drawMountain(mx, my, rng, isHigh), q: hex.q, r: hex.r });
       }
 
       // Draw mountains between adjacent mountain hexes
@@ -871,13 +938,12 @@ ${layers.join('\n')}
         const my = midY + rng.gaussian() * s * 0.15;
         items.push({ y: my, svg: this._drawMountain(
           mx, my, rng, isHigh && nh.terrain === TERRAIN.HIGH_MOUNTAIN
-        )});
+        ), q: hex.q, r: hex.r });
       }
     }
 
-    // Sort by Y so mountains in front overlap those behind
     items.sort((a, b) => a.y - b.y);
-    return `<g id="mountains">${items.map(i => i.svg).join('\n')}</g>`;
+    return this._chunkedLayer(items, 'mountains');
   }
 
   _drawMountain(x, y, rng, isHigh = false) {
@@ -1903,22 +1969,23 @@ ${layers.join('\n')}
 
   _renderHexGrid() {
     const rng = new SeededRandom(this.world.seed + 1100);
-    const parts = [];
+    const items = [];
 
     for (const [, hex] of this.world.hexMap) {
       const corners = hexCorners(hex.q, hex.r, this.hexSize);
       const pts = corners.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
-      parts.push(`<polygon points="${pts}" fill="none" stroke="#8a7a6a" stroke-width="0.4" opacity="0.4"/>`);
+      items.push({ q: hex.q, r: hex.r, svg: `<polygon points="${pts}" fill="none" stroke="#8a7a6a" stroke-width="0.4" opacity="0.4"/>` });
     }
 
-    return `<g id="hex-grid">${parts.join('\n')}</g>`;
+    return this._chunkedLayer(items, 'hex-grid');
   }
 
   _renderPassability() {
-    const parts = [];
+    const items = [];
     const s = this.hexSize;
 
     for (const [, hex] of this.world.hexMap) {
+      let svg = '';
       for (let edge = 0; edge < 6; edge++) {
         const passability = hex.edges[edge];
         if (!passability || passability === PASSABILITY.NORMAL) continue;
@@ -1927,10 +1994,11 @@ ${layers.join('\n')}
         const color = passability === PASSABILITY.BLOCKED ? '#c03030' : '#c0a030';
         const symbol = passability === PASSABILITY.BLOCKED ? '✕' : '⚠';
 
-        parts.push(`<text x="${mid.x.toFixed(1)}" y="${(mid.y + 2).toFixed(1)}" text-anchor="middle" font-size="6" fill="${color}" opacity="0.6">${symbol}</text>`);
+        svg += `<text x="${mid.x.toFixed(1)}" y="${(mid.y + 2).toFixed(1)}" text-anchor="middle" font-size="6" fill="${color}" opacity="0.6">${symbol}</text>`;
       }
+      if (svg) items.push({ q: hex.q, r: hex.r, svg });
     }
 
-    return `<g id="passability">${parts.join('\n')}</g>`;
+    return this._chunkedLayer(items, 'passability');
   }
 }

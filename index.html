@@ -254,10 +254,30 @@
 <script type="module">
 import { OverlandMap } from './src/index.js';
 import { hexToPixel, hexCorners, hexKey } from './src/hex.js';
+import { deserializeWorldData } from './src/worker.js';
 
 let currentMap = null;
+let currentWorld = null;
 window._getMap = () => currentMap;
 let iconSVGs = null;
+let mapWorker = null;
+let generateId = 0;
+
+// Initialize Web Worker for off-main-thread generation
+function initWorker() {
+  try {
+    mapWorker = new Worker('./src/worker.js', { type: 'module' });
+    mapWorker.onerror = (e) => {
+      console.warn('Worker error, falling back to main thread:', e.message);
+      mapWorker = null;
+    };
+    console.log('Map generation worker initialized');
+  } catch (e) {
+    console.warn('Web Workers not supported, using main thread:', e.message);
+    mapWorker = null;
+  }
+}
+initWorker();
 
 // Load SVG icons from /icons/ directory — tries all known icon names
 async function loadIcons() {
@@ -478,6 +498,8 @@ function positionTooltip(event) {
   tooltip.style.top = y + 'px';
 }
 
+let currentChunkBounds = null;
+
 function setupPanZoom(svgEl) {
   const container = document.getElementById('map-container');
   const st = panZoomState;
@@ -486,6 +508,33 @@ function setupPanZoom(svgEl) {
   st.panY = 20;
   st.dragging = false;
 
+  // Cache chunk elements for fast viewport culling
+  let chunkEls = null;
+  let cullRAF = null;
+
+  function cullChunks() {
+    if (!currentChunkBounds || !chunkEls) return;
+    const rect = container.getBoundingClientRect();
+    const vw = rect.width;
+    const vh = rect.height;
+
+    // Convert screen viewport corners to SVG coordinates
+    const svgMinX = -st.panX / st.zoom;
+    const svgMinY = -st.panY / st.zoom;
+    const svgMaxX = svgMinX + vw / st.zoom;
+    const svgMaxY = svgMinY + vh / st.zoom;
+
+    for (const el of chunkEls) {
+      const ck = el.dataset.ck;
+      const b = currentChunkBounds[ck];
+      if (!b) { el.style.display = ''; continue; }
+      // Check if chunk bounds intersect viewport (with margin for elements that extend beyond hex center)
+      const visible = b.maxX >= svgMinX && b.minX <= svgMaxX &&
+                      b.maxY >= svgMinY && b.minY <= svgMaxY;
+      el.style.display = visible ? '' : 'none';
+    }
+  }
+
   function applyTransform() {
     svgEl.style.transform = `translate(${st.panX}px, ${st.panY}px) scale(${st.zoom})`;
     // Update zoom-level CSS classes for label visibility
@@ -493,6 +542,15 @@ function setupPanZoom(svgEl) {
     if (st.zoom < 0.6) svgEl.classList.add('zoom-far');
     else if (st.zoom < 1.5) svgEl.classList.add('zoom-mid');
     else svgEl.classList.add('zoom-close');
+
+    // Viewport culling — debounced with rAF
+    if (currentChunkBounds) {
+      if (!chunkEls) {
+        chunkEls = svgEl.querySelectorAll('.chunk');
+      }
+      if (cullRAF) cancelAnimationFrame(cullRAF);
+      cullRAF = requestAnimationFrame(cullChunks);
+    }
   }
   applyTransform();
 
@@ -543,7 +601,7 @@ window.generate = function() {
   const seed = seedInput ? parseInt(seedInput, 10) || hashString(seedInput) : undefined;
 
   const options = {
-    seed,
+    seed: seed ?? Math.floor(Math.random() * 2147483647),
     cols: parseInt(document.getElementById('cols').value) || 20,
     rows: parseInt(document.getElementById('rows').value) || 16,
     hexSize: parseInt(document.getElementById('hexSize').value) || 50,
@@ -559,26 +617,83 @@ window.generate = function() {
     iconSVGs: iconSVGs,
   };
 
-  currentMap = new OverlandMap(options);
-  document.getElementById('seed').value = currentMap.seed;
-
   const container = document.getElementById('map-container');
-  container.innerHTML = '';
-  const svgEl = currentMap.render();
-  container.appendChild(svgEl);
+  container.innerHTML = '<p style="color: #a89878; margin-top: 100px;">⏳ Generating map...</p>';
+  document.getElementById('stats').innerHTML = '<span class="stat-item">Generating...</span>';
 
-  setupHoverInteraction(svgEl, currentMap);
-  setupPanZoom(svgEl);
+  if (mapWorker) {
+    // Worker path — generation + rendering happens off main thread
+    const thisId = ++generateId;
+    mapWorker.onmessage = function(e) {
+      const msg = e.data;
+      if (msg.id !== thisId) return;
 
-  const stats = currentMap.getStats();
-  document.getElementById('stats').innerHTML = `
-    <span class="stat-item"><span class="stat-label">Seed:</span> ${stats.seed}</span>
-    <span class="stat-item"><span class="stat-label">Hexes:</span> ${stats.totalHexes}</span>
-    <span class="stat-item"><span class="stat-label">Settlements:</span> ${stats.settlements.map(s => s.name).join(', ') || 'none'}</span>
-    <span class="stat-item"><span class="stat-label">POIs:</span> ${stats.pois.length}</span>
-    <span class="stat-item"><span class="stat-label">Rivers:</span> ${stats.rivers}</span>
-    <span class="stat-item"><span class="stat-label">Roads:</span> ${stats.roads}</span>
-  `;
+      if (msg.type === 'error') {
+        console.error('Worker generation failed:', msg.error);
+        container.innerHTML = `<p style="color: #c03030; margin-top: 100px;">Error: ${msg.error}</p>`;
+        return;
+      }
+
+      // Insert SVG string into DOM
+      container.innerHTML = msg.svgString;
+      const svgEl = container.firstElementChild;
+
+      // Reconstruct world data for hover interaction
+      currentWorld = deserializeWorldData(msg.worldData);
+      currentChunkBounds = msg.chunkBounds || null;
+      document.getElementById('seed').value = msg.seed;
+
+      // Create a lightweight map-like object for compatibility
+      currentMap = {
+        seed: msg.seed,
+        world: currentWorld,
+        options: options,
+        toSVG: () => msg.svgString,
+        getStats: () => msg.stats,
+      };
+
+      setupHoverInteraction(svgEl, currentMap);
+      setupPanZoom(svgEl);
+
+      const stats = msg.stats;
+      const timingInfo = msg.timing ? ` <span class="stat-item"><span class="stat-label">Gen:</span> ${msg.timing.generation}ms</span><span class="stat-item"><span class="stat-label">Render:</span> ${msg.timing.rendering}ms</span><span class="stat-item"><span class="stat-label">Total:</span> ${msg.timing.total}ms</span>` : '';
+      document.getElementById('stats').innerHTML = `
+        <span class="stat-item"><span class="stat-label">Seed:</span> ${stats.seed}</span>
+        <span class="stat-item"><span class="stat-label">Hexes:</span> ${stats.totalHexes}</span>
+        <span class="stat-item"><span class="stat-label">Settlements:</span> ${stats.settlements.map(s => s.name).join(', ') || 'none'}</span>
+        <span class="stat-item"><span class="stat-label">POIs:</span> ${stats.pois.length}</span>
+        <span class="stat-item"><span class="stat-label">Rivers:</span> ${stats.rivers}</span>
+        <span class="stat-item"><span class="stat-label">Roads:</span> ${stats.roads}</span>
+        ${timingInfo}
+      `;
+    };
+    mapWorker.postMessage({ type: 'generate', options, id: thisId });
+  } else {
+    // Fallback: main-thread generation
+    setTimeout(() => {
+      currentMap = new OverlandMap(options);
+      currentWorld = currentMap.world;
+      currentChunkBounds = currentMap.renderer.getChunkBounds();
+      document.getElementById('seed').value = currentMap.seed;
+
+      container.innerHTML = '';
+      const svgEl = currentMap.render();
+      container.appendChild(svgEl);
+
+      setupHoverInteraction(svgEl, currentMap);
+      setupPanZoom(svgEl);
+
+      const stats = currentMap.getStats();
+      document.getElementById('stats').innerHTML = `
+        <span class="stat-item"><span class="stat-label">Seed:</span> ${stats.seed}</span>
+        <span class="stat-item"><span class="stat-label">Hexes:</span> ${stats.totalHexes}</span>
+        <span class="stat-item"><span class="stat-label">Settlements:</span> ${stats.settlements.map(s => s.name).join(', ') || 'none'}</span>
+        <span class="stat-item"><span class="stat-label">POIs:</span> ${stats.pois.length}</span>
+        <span class="stat-item"><span class="stat-label">Rivers:</span> ${stats.rivers}</span>
+        <span class="stat-item"><span class="stat-label">Roads:</span> ${stats.roads}</span>
+      `;
+    }, 10);
+  }
 };
 
 window.randomSeed = function() {
